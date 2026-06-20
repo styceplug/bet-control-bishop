@@ -1,0 +1,70 @@
+{
+  "project_info": {
+    "project_number": "378811361561",
+    "project_id": "betcontrol-7d562",
+    "storage_bucket": "betcontrol-7d562.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:378811361561:android:ab4352ba1985dfc12e7d88",
+        "android_client_info": {
+          "package_name": "com.betcontrol.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "378811361561-52prg2o3jf9j45dj9gucsmg0a9ec2hf8.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.betcontrol.app",
+            "certificate_hash": "0c1bf0d8e9c0535873fbab0025adcf6ac270a3d7"
+          }
+        },
+        {
+          "client_id": "378811361561-6l6kl2pp1j86jtec2p0l4dv10fppkkl9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.betcontrol.app",
+            "certificate_hash": "66a58789068e20b1b34434e0b7e4363bf103b885"
+          }
+        },
+        {
+          "client_id": "378811361561-70h5rjotkk056nvkita6tq6532s8l6sr.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.betcontrol.app",
+            "certificate_hash": "84b7823970b4ed8385334bcc243ff85932eb7234"
+          }
+        },
+        {
+          "client_id": "378811361561-es3167apbko8bvnhnvj2aueuplbu9j5r.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDXLM_h3FGTnNMCArz8WhMaDDKeSF_jsE8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "378811361561-es3167apbko8bvnhnvj2aueuplbu9j5r.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "378811361561-7coo6b7glam5d5qslls10ief3j96hppc.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.project.betcontrolMain"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

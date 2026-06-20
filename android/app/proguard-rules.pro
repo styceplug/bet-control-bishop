@@ -1,0 +1,5 @@
+-keep class io.flutter.** { *; }
+-keep class com.google.firebase.** { *; }
+-keep class com.paystack.** { *; }
+-dontwarn io.flutter.**
+-dontwarn com.google.**

@@ -1,0 +1,77 @@
+name: betcontrol_main
+description: "A new Flutter project."
+publish_to: 'none'
+version: 1.0.0+9
+
+environment:
+  sdk: ^3.5.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  shared_preferences: ^2.3.2
+  flutter_local_notifications: ^17.2.3
+  permission_handler: ^11.3.1
+  provider: ^6.1.2
+  google_sign_in: ^6.2.1
+  flutter_paystack_plus: ^2.5.0
+  http: ^1.1.2
+  url_launcher: ^6.3.2
+  flutter_riverpod: ^2.5.1
+  firebase_core: ^3.3.0
+  firebase_auth: ^5.1.4
+  cloud_firestore: ^5.2.1
+  google_fonts: ^6.2.1
+  smooth_page_indicator: ^1.1.0
+  flutter_animate: ^4.5.0
+  firebase_storage: ^12.3.2
+  image_picker: ^1.1.2
+  timezone: ^0.9.0
+  firebase_messaging: 15.2.10
+  firebase_analytics: ^11.3.0
+  firebase_crashlytics: ^4.1.0
+  in_app_update: ^4.2.3
+  purchases_flutter: ^10.2.3
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.1
+  flutter_native_splash: ^2.4.1
+
+dependency_overrides:
+  path_provider_foundation: 2.5.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icons/app_icon.png"
+  adaptive_icon_background: "#00D4AA"
+  adaptive_icon_foreground: "assets/icons/app_icon_foreground.png"
+  min_sdk_android: 21
+  web:
+    generate: false
+
+flutter_native_splash:
+  color: "#1A1A2E"
+  image: assets/icons/app_icon.png
+  color_dark: "#1A1A2E"
+  image_dark: assets/icons/app_icon.png
+  android_12:
+    image: assets/icons/app_icon.png
+    icon_background_color: "#1A1A2E"
+    image_dark: assets/icons/app_icon.png
+    icon_background_color_dark: "#1A1A2E"
+  fullscreen: true
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icons/app_icon_foreground.png
+    - assets/icons/app_icon.png
+    - assets/adi-registration.properties
+    - assets/images/betcontrol image.png
+    - assets/icons/house2.png
