@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui';
 import '../../services/user_service.dart';
 import 'package:betcontrol_main/screens/auth/email_verification_screen.dart';
@@ -733,7 +734,7 @@ class _AuthScreenState extends State<AuthScreen>
         const SizedBox(height: 20),
         _orDivider(),
         const SizedBox(height: 18),
-        _googleBtn(),
+        if(Platform.isAndroid)_googleBtn(),
       ],
     );
   }

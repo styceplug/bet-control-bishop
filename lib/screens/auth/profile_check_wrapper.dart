@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:betcontrol_main/screens/auth/auth_screen.dart';
 import 'package:betcontrol_main/screens/auth/complete_profile_screen.dart';
 import 'package:betcontrol_main/screens/auth/email_verification_screen.dart';
@@ -9,6 +11,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ProfileCheckWrapper extends StatefulWidget {
@@ -148,12 +151,24 @@ class _ProfileCheckWrapperState extends State<ProfileCheckWrapper>
       }
     }
 
+    _syncRevenueCatUser(refreshed.uid);
+
     // Save FCM token to Firestore so Cloud Functions can send push notifications
     _saveFcmToken(refreshed.uid);
 
     if (!mounted) return;
     final isComplete = results[1];
     _go(isComplete ? const HomeScreen() : const CompleteProfileScreen());
+  }
+
+  Future<void> _syncRevenueCatUser(String uid) async {
+    if (!Platform.isIOS) return;
+
+    try {
+      await Purchases.logIn(uid).timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // RevenueCat will keep using its cached user and retry on later launches.
+    }
   }
 
   // ── Save FCM token — fire and forget, never blocks navigation ────────────
@@ -164,8 +179,7 @@ class _ProfileCheckWrapperState extends State<ProfileCheckWrapper>
       await FirebaseFirestore.instance
           .collection('users')
           .doc(uid)
-          .update({'fcmToken': token})
-          .timeout(const Duration(seconds: 5));
+          .update({'fcmToken': token}).timeout(const Duration(seconds: 5));
     } catch (_) {
       // Non-critical — if this fails, FCM push won't work but app still functions
     }
@@ -209,9 +223,7 @@ class _ProfileCheckWrapperState extends State<ProfileCheckWrapper>
                 child: _buildLogo(),
               ),
             ),
-
             const SizedBox(height: 40),
-
             Row(
               mainAxisSize: MainAxisSize.min,
               children: List.generate(_appName.length, (i) {
@@ -232,9 +244,7 @@ class _ProfileCheckWrapperState extends State<ProfileCheckWrapper>
                 );
               }),
             ),
-
             const SizedBox(height: 10),
-
             FadeTransition(
               opacity: _taglineFade,
               child: Text(
@@ -247,9 +257,7 @@ class _ProfileCheckWrapperState extends State<ProfileCheckWrapper>
                 ),
               ),
             ),
-
             const SizedBox(height: 48),
-
             FadeTransition(
               opacity: _loadingFade,
               child: SizedBox(

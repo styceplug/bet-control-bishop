@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 // import 'package:betcontrol_main/config/paystack_config.dart.dart';
 import 'package:betcontrol_main/services/analytics_service.dart';
+import 'package:betcontrol_main/services/subscription_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -40,6 +41,12 @@ enum PaymentErrorType {
 
 class PurchaseService {
   final _firestore = FirebaseFirestore.instance;
+  static const String appleMonthlyProductId = 'betcontrol_monthly_sub';
+  static const String appleAnnualProductId = 'betcontrol_annual_sub';
+  static const List<String> appleProductIds = [
+    appleMonthlyProductId,
+    appleAnnualProductId,
+  ];
 
   static const _kPendingRef = 'bc_pending_payment_reference';
   static const _kPendingCreatedAt = 'bc_pending_payment_created_at';
@@ -124,14 +131,16 @@ class PurchaseService {
       // Get Firebase ID token to authenticate the request
       final idToken = await user.getIdToken();
 
-      final response = await http.post(
-        Uri.parse(_verifyFunctionUrl),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $idToken',
-        },
-        body: json.encode({'reference': reference}),
-      ).timeout(const Duration(seconds: 30));
+      final response = await http
+          .post(
+            Uri.parse(_verifyFunctionUrl),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $idToken',
+            },
+            body: json.encode({'reference': reference}),
+          )
+          .timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -204,7 +213,7 @@ class PurchaseService {
 
       return PaymentResult.error(
         'You have an incomplete payment. If you\'ve already sent the money, '
-            'your subscription will activate automatically when you reopen the app.',
+        'your subscription will activate automatically when you reopen the app.',
         PaymentErrorType.incompleteReminder,
       );
     }
@@ -212,19 +221,29 @@ class PurchaseService {
     return null;
   }
 
-
-
-  Future<PaymentResult> payAndSubscribe(BuildContext context, {Package? applePackage}) async {
+  Future<PaymentResult> payAndSubscribe(
+    BuildContext context, {
+    Package? applePackage,
+    StoreProduct? appleProduct,
+  }) async {
     if (Platform.isIOS) {
-      if (applePackage == null) {
-        return PaymentResult.error("No package selected for Apple purchase", PaymentErrorType.unknown);
+      if (applePackage != null) {
+        return await processAppleSubscription(applePackage);
       }
-      return await processAppleSubscription(applePackage);
+      if (appleProduct != null) {
+        return await processAppleStoreProduct(appleProduct);
+      }
+      if (applePackage == null && appleProduct == null) {
+        return PaymentResult.error(
+            "No Apple subscription selected", PaymentErrorType.unknown);
+      }
     } else {
       return await payAndroidPaystack(context);
     }
-  }
 
+    return PaymentResult.error(
+        "Could not start subscription", PaymentErrorType.unknown);
+  }
 
   Future<PaymentResult> payAndroidPaystack(BuildContext context) async {
     final user = FirebaseAuth.instance.currentUser;
@@ -260,20 +279,17 @@ class PurchaseService {
           'type': 'subscription',
           'mode': PaystackConfig.mode,
         },
-        onClosed: () =>
-            debugPrint('Paystack popup closed — ref kept on disk'),
+        onClosed: () => debugPrint('Paystack popup closed — ref kept on disk'),
         onSuccess: () => debugPrint('onSuccess fired'),
       );
     } on SocketException {
       await _clearPendingPayment();
-      return PaymentResult.error(
-          'No internet connection. Please try again.',
+      return PaymentResult.error('No internet connection. Please try again.',
           PaymentErrorType.network);
     } on TimeoutException {
       await _clearPendingPayment();
       return PaymentResult.error(
-          'Connection timed out. Please try again.',
-          PaymentErrorType.timeout);
+          'Connection timed out. Please try again.', PaymentErrorType.timeout);
     } catch (e) {
       if (_isNetworkError(e)) {
         await _clearPendingPayment();
@@ -302,15 +318,14 @@ class PurchaseService {
 
     if (status == 'failed') {
       await _clearPendingPayment();
-      return PaymentResult.error(
-          'Payment was not completed. Please try again.',
+      return PaymentResult.error('Payment was not completed. Please try again.',
           PaymentErrorType.verification);
     }
 
     // abandoned or null — ref stays for recovery
     return PaymentResult.error(
       'If you completed the bank transfer, your subscription will activate '
-          'automatically the next time you open the app.',
+      'automatically the next time you open the app.',
       PaymentErrorType.verification,
     );
   }
@@ -318,10 +333,15 @@ class PurchaseService {
   Future<PaymentResult> processAppleSubscription(Package packageToBuy) async {
     try {
       // 1. Purchase the specific package passed from the UI
-      PurchaseResult result = await Purchases.purchasePackage(packageToBuy);
+      final result = await Purchases.purchase(
+        PurchaseParams.package(packageToBuy),
+      );
 
       // 2. Check the CORRECT entitlement ID
-      if (result.customerInfo.entitlements.all["BetControl"]?.isActive == true) {
+      final entitlement = result
+          .customerInfo.entitlements.all[SubscriptionService.entitlementId];
+      if (entitlement?.isActive == true) {
+        await syncAppleSubscription(result.customerInfo);
         return PaymentResult.success();
       }
 
@@ -329,15 +349,89 @@ class PurchaseService {
     } on PlatformException catch (e) {
       var errorCode = PurchasesErrorHelper.getErrorCode(e);
       if (errorCode == PurchasesErrorCode.purchaseCancelledError) {
-        return PaymentResult.error("Purchase cancelled", PaymentErrorType.cancelled);
+        return PaymentResult.error(
+            "Purchase cancelled", PaymentErrorType.cancelled);
       }
-      return PaymentResult.error(e.message ?? "Unknown error", PaymentErrorType.unknown);
+      return PaymentResult.error(
+          e.message ?? "Unknown error", PaymentErrorType.unknown);
     } catch (e) {
       return PaymentResult.error(e.toString(), PaymentErrorType.unknown);
     }
   }
 
+  Future<PaymentResult> processAppleStoreProduct(
+      StoreProduct productToBuy) async {
+    try {
+      final result = await Purchases.purchase(
+        PurchaseParams.storeProduct(productToBuy),
+      );
 
+      final entitlement = result
+          .customerInfo.entitlements.all[SubscriptionService.entitlementId];
+      if (entitlement?.isActive == true) {
+        await syncAppleSubscription(result.customerInfo);
+        return PaymentResult.success();
+      }
+
+      return PaymentResult.error("Purchase failed", PaymentErrorType.unknown);
+    } on PlatformException catch (e) {
+      var errorCode = PurchasesErrorHelper.getErrorCode(e);
+      if (errorCode == PurchasesErrorCode.purchaseCancelledError) {
+        return PaymentResult.error(
+            "Purchase cancelled", PaymentErrorType.cancelled);
+      }
+      return PaymentResult.error(
+          e.message ?? "Unknown error", PaymentErrorType.unknown);
+    } catch (e) {
+      return PaymentResult.error(e.toString(), PaymentErrorType.unknown);
+    }
+  }
+
+  Future<PaymentResult> restoreAppleSubscription() async {
+    try {
+      final customerInfo = await Purchases.restorePurchases();
+      final entitlement =
+          customerInfo.entitlements.all[SubscriptionService.entitlementId];
+
+      if (entitlement?.isActive == true) {
+        await syncAppleSubscription(customerInfo);
+        return PaymentResult.success();
+      }
+
+      return PaymentResult.error(
+        'No active Apple subscription was found.',
+        PaymentErrorType.verification,
+      );
+    } on PlatformException catch (e) {
+      return PaymentResult.error(
+        e.message ?? 'Restore failed',
+        PaymentErrorType.unknown,
+      );
+    } catch (e) {
+      return PaymentResult.error(e.toString(), PaymentErrorType.unknown);
+    }
+  }
+
+  Future<bool> syncAppleSubscription(CustomerInfo customerInfo) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return false;
+
+    final entitlement =
+        customerInfo.entitlements.all[SubscriptionService.entitlementId];
+    if (entitlement?.isActive != true) return false;
+    final activeEntitlement = entitlement!;
+
+    try {
+      await AnalyticsService.logSubscriptionPurchased();
+      await AnalyticsService.setSubscriptionStatus(
+        activeEntitlement.periodType == PeriodType.trial ? 'trial' : 'active',
+      );
+
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   bool _isNetworkError(dynamic e) {
     final s = e.toString().toLowerCase();

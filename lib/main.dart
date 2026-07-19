@@ -1,4 +1,3 @@
-
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -8,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart' as legacy_provider;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:in_app_update/in_app_update.dart';
@@ -26,16 +26,18 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  if (Platform.isIOS) {
-    await Purchases.setLogLevel(LogLevel.debug);
-
-    PurchasesConfiguration configuration = PurchasesConfiguration("appl_CMEYfJTGeLxHgFhWocUAsfPoJcF");
-    await Purchases.configure(configuration);
-  }
-
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  if (Platform.isIOS) {
+    await Purchases.setLogLevel(kDebugMode ? LogLevel.warn : LogLevel.error);
+
+    final configuration =
+        PurchasesConfiguration("appl_CMEYfJTGeLxHgFhWocUAsfPoJcF")
+          ..appUserID = FirebaseAuth.instance.currentUser?.uid;
+    await Purchases.configure(configuration);
+  }
 
   // ── Crashlytics — catch all uncaught errors and report them ──────────
   FlutterError.onError = (errorDetails) {
@@ -134,8 +136,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     if (kDebugMode) return;
     try {
       final updateInfo = await InAppUpdate.checkForUpdate();
-      if (updateInfo.updateAvailability ==
-          UpdateAvailability.updateAvailable) {
+      if (updateInfo.updateAvailability == UpdateAvailability.updateAvailable) {
         await InAppUpdate.startFlexibleUpdate();
         // completeFlexibleUpdate() shows the "Restart to update" prompt
         // once the download finishes. It's safe to call immediately —
@@ -217,8 +218,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             Expanded(
               child: Text(
                 message,
-                style: GoogleFonts.poppins(
-                    color: Colors.white, fontSize: 13),
+                style: GoogleFonts.poppins(color: Colors.white, fontSize: 13),
               ),
             ),
           ],
@@ -227,8 +227,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         duration: duration,
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.all(16),
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
@@ -292,8 +291,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(
-                  color: Color(0xFF00D4AA), width: 2),
+              borderSide: const BorderSide(color: Color(0xFF00D4AA), width: 2),
             ),
             errorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(16),

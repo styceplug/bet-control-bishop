@@ -4,9 +4,8 @@ import 'package:betcontrol_main/services/analytics_service.dart';
 import 'package:betcontrol_main/services/subscription_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class BlockService extends ChangeNotifier {
@@ -14,20 +13,30 @@ class BlockService extends ChangeNotifier {
   static const String _keyUnlockTime = 'unlock_time';
   static const String _keyPin = 'block_pin';
   static const String _keyVpnInterrupted = 'vpn_interrupted';
+  static const String _keyHardCommitment = 'hard_commitment';
 
   static const _channel = MethodChannel('com.betcontrol/blocker');
 
   bool _isBlocking = false;
   bool _vpnInterrupted = false;
   bool _accessibilityLost = false;
+  bool _hardCommitment = false;
   DateTime? _unlockTime;
   Timer? _timer;
   Timer? _protectionStatusTimer;
   Timer? _accessibilityCheckTimer;
+  Timer? _filterDebugTimer;
+  bool _nativeStartInFlight = false;
+  String? _lastVpnPermissionError;
+  bool _dnsSettingsNeedsActivation = false;
 
   bool get isBlocking => _isBlocking;
   bool get vpnInterrupted => _vpnInterrupted;
   bool get accessibilityLost => _accessibilityLost;
+  /// When true (iOS), app uninstall is locked device-wide while protection is on.
+  bool get hardCommitment => _hardCommitment;
+  String? get lastVpnPermissionError => _lastVpnPermissionError;
+  bool get dnsSettingsNeedsActivation => _dnsSettingsNeedsActivation;
   DateTime? get unlockTime => _unlockTime;
 
   Duration get timeRemaining {
@@ -50,12 +59,15 @@ class BlockService extends ChangeNotifier {
   Future<bool> _isSubscriptionExpired() async {
     if (Platform.isIOS) {
       try {
-        CustomerInfo customerInfo = await Purchases.getCustomerInfo();
-        bool isActive = customerInfo.entitlements.all["BetControl"]?.isActive == true;
-        return !isActive; // If not active, it's expired
+        // throwOnError: a network/Apple outage must never read as "expired" —
+        // deactivating a gambling block on a fetch failure is the worst
+        // failure mode. Fail closed: keep protection on.
+        final details =
+            await SubscriptionService().getDetails(throwOnError: true);
+        return !details.isAccessGranted;
       } catch (e) {
-        debugPrint("RevenueCat check failed: $e");
-        return true; // Assume expired if check fails
+        debugPrint("iOS subscription check failed (keeping protection): $e");
+        return false;
       }
     }
 
@@ -96,6 +108,9 @@ class BlockService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     _isBlocking = prefs.getBool(_keyIsBlocking) ?? false;
     _vpnInterrupted = prefs.getBool(_keyVpnInterrupted) ?? false;
+    _hardCommitment = prefs.getBool(_keyHardCommitment) ?? false;
+
+    await _startDnsDebugConsoleLogging();
 
     // Flutter stores unlock_time via setInt which overflows for ms timestamps
     // (ms epoch > Int32 max). Read it, but treat 0 or obviously wrong values
@@ -114,8 +129,7 @@ class BlockService extends ChangeNotifier {
         final nativeUnlockTime =
             await _channel.invokeMethod<int>('getNativeUnlockTime');
         if (nativeUnlockTime != null && nativeUnlockTime > 0) {
-          _unlockTime =
-              DateTime.fromMillisecondsSinceEpoch(nativeUnlockTime);
+          _unlockTime = DateTime.fromMillisecondsSinceEpoch(nativeUnlockTime);
         }
       } catch (_) {}
     }
@@ -140,40 +154,65 @@ class BlockService extends ChangeNotifier {
 
   /// Activates the block.
   ///
-  /// VPN permission is checked FIRST before saving any state — if the system
-  /// dialog needs to show, we return false immediately and the UI stays on
-  /// the setup screen. State is only saved after VPN is confirmed started.
+  /// Native protection permission is checked first before saving any state.
+  /// On iOS this is Screen Time authorization; on Android this is the VPN path.
   Future<bool> activateBlock({
     required int durationDays,
     required String pin,
+    bool hardCommitment = false,
   }) async {
     if (_isBlocking) return false;
 
-    String? vpnResult;
-    try {
-      vpnResult = await _channel.invokeMethod<String>('startVpn');
-    } catch (e) {
-      debugPrint('VPN start error: $e');
-      return false;
-    }
-
-    if (vpnResult == 'requesting_permission') {
-      return false;
-    }
-
+    // Write block flags to the app group BEFORE starting the tunnel so the
+    // DNS extension can block immediately (it reads isBlocking from app group).
     final prefs = await SharedPreferences.getInstance();
     _unlockTime = DateTime.now().add(Duration(days: durationDays));
     _isBlocking = true;
+    _hardCommitment = hardCommitment;
     _vpnInterrupted = false;
     _accessibilityLost = false;
 
     await prefs.setBool(_keyIsBlocking, true);
     await prefs.setBool(_keyVpnInterrupted, false);
+    await prefs.setBool(_keyHardCommitment, hardCommitment);
     await prefs.setInt(_keyUnlockTime, _unlockTime!.millisecondsSinceEpoch);
     await prefs.setString(_keyPin, pin);
-
-    // Sync native state — also schedules the expiry alarm
     await _syncNativeBlockState(isBlocking: true);
+
+    String? vpnResult;
+    try {
+      vpnResult = await _channel.invokeMethod<String>('startVpn');
+    } catch (e) {
+      debugPrint('Native protection start error: $e');
+      // Roll back local active state if native shield failed to start.
+      _isBlocking = false;
+      _hardCommitment = false;
+      _unlockTime = null;
+      await prefs.setBool(_keyIsBlocking, false);
+      await prefs.setBool(_keyHardCommitment, false);
+      await _syncNativeBlockState(isBlocking: false);
+      return false;
+    }
+
+    if (vpnResult == 'requesting_permission') {
+      _isBlocking = false;
+      _hardCommitment = false;
+      _unlockTime = null;
+      await prefs.setBool(_keyIsBlocking, false);
+      await prefs.setBool(_keyHardCommitment, false);
+      await _syncNativeBlockState(isBlocking: false);
+      return false;
+    }
+
+    if (vpnResult == 'dns_settings_needs_activation') {
+      _dnsSettingsNeedsActivation = true;
+      _lastVpnPermissionError =
+          'Website Shield DNS was installed but is not active yet. Go to Settings > General > VPN & Device Management > DNS and select BetControl Website Shield, then try again.';
+      // Keep isBlocking true — apps stay blocked via Screen Time; user must
+      // finish DNS activation for websites.
+      notifyListeners();
+      return false;
+    }
 
     _startTimer();
     _startProtectionStatusTimer();
@@ -209,37 +248,218 @@ class BlockService extends ChangeNotifier {
 
   Future<bool> isVpnPermissionGranted() async {
     try {
-      final result = await _channel.invokeMethod<bool>('isVpnPermissionGranted');
+      final result =
+          await _channel.invokeMethod<bool>('isVpnPermissionGranted');
       return result ?? false;
     } catch (e) {
-      debugPrint('VPN permission check error: $e');
+      debugPrint('🛡️ Shield permission check error: $e');
       return false;
     }
   }
 
-
-
-  Future<void> requestVpnPermission() async {
+  Future<bool> requestVpnPermission() async {
     try {
-      await _channel.invokeMethod('requestVpnPermission');
-    } on PlatformException catch (e) {
-      if (e.message != null && e.message!.contains('configuration is unchanged')) {
-        debugPrint('VPN already configured, skipping.');
-        return;
+      _lastVpnPermissionError = null;
+      _dnsSettingsNeedsActivation = false;
+      debugPrint('🛡️ Shield: requesting permission…');
+      final nativeResult = await _channel
+          .invokeMethod('requestVpnPermission')
+          .timeout(const Duration(seconds: 40));
+      if (nativeResult == 'dns_settings_needs_activation') {
+        _dnsSettingsNeedsActivation = true;
+        _lastVpnPermissionError =
+            'Website Shield DNS is installed but not active. Go to Settings > General > VPN & Device Management > DNS and select BetControl Website Shield.';
+      } else if (nativeResult is String &&
+          (nativeResult.contains('dns_settings') ||
+              nativeResult.contains('vpn'))) {
+        _lastVpnPermissionError = null;
       }
-      rethrow;
+      final afterDiagnostics = await getWebsiteShieldDiagnostics();
+      _printWebsiteShieldDiagnostics('after request', afterDiagnostics);
+      final granted = await isVpnPermissionGranted();
+      if (!granted && Platform.isIOS) {
+        final mode =
+            afterDiagnostics['websiteShieldEnforcementMode']?.toString();
+        final dnsSettings = afterDiagnostics['dnsSettingsManager'];
+        final configured = dnsSettings is Map &&
+            dnsSettings['isConfiguredForBetControl'] == true;
+        final enabled = dnsSettings is Map && dnsSettings['isEnabled'] == true;
+        if (mode == 'dns-settings-needs-activation' ||
+            (configured && !enabled)) {
+          _dnsSettingsNeedsActivation = true;
+          _lastVpnPermissionError =
+              'Website Shield DNS was added but iOS has not enabled it yet. Go to Settings > VPN & Device Management > DNS and select BetControl Website Shield.';
+        }
+      }
+      debugPrint(
+          '🛡️ Shield: permission granted=$granted mode=${afterDiagnostics['websiteShieldEnforcementMode']} status=${_tunnelStatus(afterDiagnostics)}');
+      return granted;
+    } on PlatformException catch (e) {
+      if (e.message != null &&
+          e.message!.contains('configuration is unchanged')) {
+        final granted = await isVpnPermissionGranted();
+        if (!granted && Platform.isIOS) {
+          _lastVpnPermissionError =
+              'Website Shield DNS is saved but not enabled. Go to Settings > VPN & Device Management > DNS and select BetControl Website Shield.';
+        }
+        return granted;
+      }
+      _lastVpnPermissionError = e.message ?? e.code;
+      debugPrint('🛡️ Shield: permission failed ${e.code} ${e.message}');
+      return false;
+    } on TimeoutException {
+      _lastVpnPermissionError =
+          'Website Shield is taking too long. Allow the VPN if prompted, or enable BetControl under Settings > VPN & Device Management > DNS.';
+      debugPrint('🛡️ Shield: permission timed out');
+      return false;
+    } catch (e) {
+      _lastVpnPermissionError = e.toString();
+      debugPrint('🛡️ Shield: permission error: $e');
+      return false;
     }
   }
 
-  Future<void> _startNativeServices() async {
+  String _tunnelStatus(Map<String, dynamic> diagnostics) {
+    final tunnel = diagnostics['packetTunnelManager'];
+    if (tunnel is Map) return tunnel['status']?.toString() ?? '?';
+    return '?';
+  }
+
+  Future<bool> runManagedWebContentSingleDomainTest() async {
+    if (!Platform.isIOS) return false;
+
     try {
-      await _channel.invokeMethod('syncBlockState', {
-        'isBlocking': _isBlocking,
-        'unlockTime': _unlockTime?.millisecondsSinceEpoch ?? 0,
-      });
+      final result =
+          await _channel.invokeMethod('runManagedWebContentSingleDomainTest');
+      debugPrint('🛡️ ScreenTimeTest: blockedByFilter result -> $result');
+      return true;
+    } on PlatformException catch (e) {
+      debugPrint(
+          '🛡️ ScreenTimeTest: blockedByFilter failed code=${e.code} message=${e.message}');
+      return false;
+    } catch (e) {
+      debugPrint('🛡️ ScreenTimeTest: blockedByFilter error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> runManagedWebDomainShieldSingleDomainTest() async {
+    if (!Platform.isIOS) return false;
+
+    try {
+      final result = await _channel
+          .invokeMethod('runManagedWebDomainShieldSingleDomainTest');
+      debugPrint('🛡️ ScreenTimeTest: shield.webDomains result -> $result');
+      return true;
+    } on PlatformException catch (e) {
+      debugPrint(
+          '🛡️ ScreenTimeTest: shield.webDomains failed code=${e.code} message=${e.message}');
+      return false;
+    } catch (e) {
+      debugPrint('🛡️ ScreenTimeTest: shield.webDomains error: $e');
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>> getWebsiteShieldDiagnostics() async {
+    if (!Platform.isIOS) return const {};
+
+    try {
+      final raw = await _channel
+          .invokeMethod<Map<dynamic, dynamic>>('getWebsiteShieldDiagnostics');
+      return raw?.map((key, value) => MapEntry(key.toString(), value)) ??
+          const {};
+    } catch (e) {
+      return {'diagnosticsError': e.toString()};
+    }
+  }
+
+  Future<void> logWebsiteShieldDiagnostics(String label) async {
+    if (!Platform.isIOS) return;
+    final diagnostics = await getWebsiteShieldDiagnostics();
+    _printWebsiteShieldDiagnostics(label, diagnostics);
+  }
+
+  Future<bool> selectScreenTimeTargets() async {
+    if (!Platform.isIOS) return true;
+
+    try {
+      debugPrint('🛡️ ProtectionShield: opening Screen Time target picker');
+      final raw = await _channel
+          .invokeMethod<Map<dynamic, dynamic>>('selectScreenTimeTargets');
+      final result =
+          raw?.map((key, value) => MapEntry(key.toString(), value)) ??
+              const <String, dynamic>{};
+      debugPrint('🛡️ ProtectionShield: picker result -> $result');
+
+      final diagnostics = await getWebsiteShieldDiagnostics();
+      _printWebsiteShieldDiagnostics('after picker', diagnostics);
+
+      final webTokenCount =
+          diagnostics['screenTimeSelectedWebDomainTokenCount'];
+      final appTokenCount =
+          diagnostics['screenTimeSelectedApplicationTokenCount'];
+      final categoryTokenCount =
+          diagnostics['screenTimeSelectedCategoryTokenCount'];
+
+      debugPrint(
+          '🛡️ ProtectionShield: picker token counts web=$webTokenCount app=$appTokenCount category=$categoryTokenCount');
+      return webTokenCount is int && webTokenCount > 0;
+    } on PlatformException catch (e) {
+      _lastVpnPermissionError = e.message ?? e.code;
+      debugPrint(
+          '🛡️ ProtectionShield: picker PlatformException code=${e.code} message=${e.message} details=${e.details}');
+      return false;
+    } catch (e) {
+      _lastVpnPermissionError = e.toString();
+      debugPrint('🛡️ ProtectionShield: picker error: $e');
+      return false;
+    }
+  }
+
+  void _printWebsiteShieldDiagnostics(
+    String label,
+    Map<String, dynamic> diagnostics,
+  ) {
+    final tunnel = diagnostics['packetTunnelManager'];
+    final status = tunnel is Map ? tunnel['status'] : null;
+    final enabled = tunnel is Map ? tunnel['isEnabled'] : null;
+    debugPrint(
+      '🛡️ Shield[$label] mode=${diagnostics['websiteShieldEnforcementMode']} '
+      'plugin=${diagnostics['pluginExists']} tunnel=$status enabled=$enabled '
+      'screenTime=${diagnostics['screenTimeAuthorized']}',
+    );
+  }
+
+  Future<void> _startNativeServices() async {
+    if (_nativeStartInFlight) {
+      debugPrint(
+          '🛡️ ProtectionShield: native start already running; skipping duplicate start');
+      return;
+    }
+    _nativeStartInFlight = true;
+
+    try {
+      await _startDnsDebugConsoleLogging();
+      await _syncNativeBlockState(isBlocking: _isBlocking);
+      if (Platform.isIOS) {
+        if (_isBlocking) {
+          final startResult = await _channel.invokeMethod('startVpn');
+          if (startResult == 'dns_settings_needs_activation') {
+            _dnsSettingsNeedsActivation = true;
+            _lastVpnPermissionError =
+                'Website Shield DNS needs activation in Settings > VPN & Device Management > DNS.';
+          }
+          final diagnostics = await getWebsiteShieldDiagnostics();
+          _printWebsiteShieldDiagnostics('startup', diagnostics);
+        }
+        return;
+      }
       await _channel.invokeMethod('startVpn');
     } catch (e) {
       debugPrint('Native service error: $e');
+    } finally {
+      _nativeStartInFlight = false;
     }
   }
 
@@ -260,6 +480,15 @@ class BlockService extends ChangeNotifier {
 
   Future<void> deactivateBlockDueToTrialExpiry() async {
     if (!_isBlocking) return;
+    // Re-verify before deactivating: the subscription stream can report
+    // trialExpired from Firestore while the Apple check silently failed
+    // during an outage. Only positive evidence of expiry may end the block.
+    final expired = await _isSubscriptionExpired();
+    if (!expired) {
+      debugPrint(
+          '🛡️ ProtectionShield: trial-expiry deactivation skipped — subscription not verifiably expired');
+      return;
+    }
     await _deactivateBlock();
   }
 
@@ -269,6 +498,10 @@ class BlockService extends ChangeNotifier {
     if (_vpnInterrupted != interrupted) {
       _vpnInterrupted = interrupted;
       notifyListeners();
+    }
+
+    if (Platform.isIOS && _isBlocking) {
+      await _syncNativeBlockState(isBlocking: true);
     }
   }
 
@@ -301,8 +534,7 @@ class BlockService extends ChangeNotifier {
 
   Future<bool> isAlwaysOnVpnEnabled() async {
     try {
-      final result =
-          await _channel.invokeMethod<bool>('isAlwaysOnVpnEnabled');
+      final result = await _channel.invokeMethod<bool>('isAlwaysOnVpnEnabled');
       return result ?? false;
     } catch (e) {
       debugPrint('Always-on VPN check error: $e');
@@ -339,12 +571,22 @@ class BlockService extends ChangeNotifier {
   Future<bool> verifyPin(String pin) async {
     final prefs = await SharedPreferences.getInstance();
     final savedPin = prefs.getString(_keyPin);
-    return savedPin == pin;
+    if (savedPin == null || savedPin.isEmpty) return false;
+    return savedPin == pin.trim();
   }
 
   Future<bool> hasPin() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.containsKey(_keyPin);
+    final saved = prefs.getString(_keyPin);
+    return saved != null && saved.isNotEmpty;
+  }
+
+  /// Ends protection after PIN verification. Used for intentional early stop
+  /// and before the user cancels their subscription.
+  Future<bool> endProtectionWithPin(String pin) async {
+    if (!await verifyPin(pin)) return false;
+    await _deactivateBlock();
+    return true;
   }
 
   void _startTimer() {
@@ -378,6 +620,7 @@ class BlockService extends ChangeNotifier {
   Future<void> _deactivateBlock() async {
     final prefs = await SharedPreferences.getInstance();
     _isBlocking = false;
+    _hardCommitment = false;
     _unlockTime = null;
     _vpnInterrupted = false;
     _accessibilityLost = false;
@@ -385,6 +628,7 @@ class BlockService extends ChangeNotifier {
     _protectionStatusTimer?.cancel();
     _accessibilityCheckTimer?.cancel();
     await prefs.setBool(_keyIsBlocking, false);
+    await prefs.setBool(_keyHardCommitment, false);
     await prefs.setBool(_keyVpnInterrupted, false);
     await prefs.remove(_keyUnlockTime);
     await prefs.remove(_keyPin);
@@ -396,10 +640,6 @@ class BlockService extends ChangeNotifier {
     }
     notifyListeners();
 
-    // ── Analytics ─────────────────────────────────────────────────────────
-    // Fires when the block ends — either timer expired or subscription lapsed.
-    // Update the user property so Analytics can segment currently-blocking
-    // users from those whose block has ended.
     await AnalyticsService.logBlockExpired();
     await AnalyticsService.setBlockingStatus(false);
   }
@@ -422,16 +662,27 @@ class BlockService extends ChangeNotifier {
       final subscriptionService = SubscriptionService();
       final hasActiveSub = await subscriptionService.isSubscriptionActive();
 
+      debugPrint(
+          "🛡️ Sync native: isBlocking=$isBlocking hasSub=$hasActiveSub");
+
       await _channel.invokeMethod('syncBlockState', {
         'isBlocking': isBlocking,
         'hasActiveSubscription': hasActiveSub,
-        'unlockTime': isBlocking
-            ? (_unlockTime?.millisecondsSinceEpoch ?? 0)
-            : 0,
+        'hardCommitment': isBlocking && _hardCommitment,
+        'dnsDebugEnabled': Platform.isIOS && kDebugMode,
+        'unlockTime':
+            isBlocking ? (_unlockTime?.millisecondsSinceEpoch ?? 0) : 0,
       });
     } catch (e) {
-      debugPrint('Native block state sync error: $e');
+      debugPrint('🟦 FLUTTER: Native block state sync error: $e');
     }
+  }
+
+  Future<void> _startDnsDebugConsoleLogging() async {
+    // Intentionally quiet: tunnel BLOCK/PASS lines go to device Console
+    // (filter "BetControl PacketTunnel"), not the Flutter log flood.
+    _filterDebugTimer?.cancel();
+    _filterDebugTimer = null;
   }
 
   @override
@@ -439,6 +690,7 @@ class BlockService extends ChangeNotifier {
     _timer?.cancel();
     _protectionStatusTimer?.cancel();
     _accessibilityCheckTimer?.cancel();
+    _filterDebugTimer?.cancel();
     super.dispose();
   }
 }

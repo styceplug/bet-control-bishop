@@ -71,7 +71,6 @@ exports.verifyPayment = onRequest(async (req, res) => {
       return res.status(500).json({ error: "Server configuration error" });
     }
 
-    const crypto = require("crypto");
     const axios = require("axios");
     const response = await axios.get(
       `https://api.paystack.co/transaction/verify/${reference}`,
@@ -100,6 +99,119 @@ exports.verifyPayment = onRequest(async (req, res) => {
   } catch (error) {
     console.error("verifyPayment error:", error.message);
     return res.status(200).json({ status: null });
+  }
+});
+
+// ── RevenueCat Webhook — source of truth for Apple subscriptions ───────────
+exports.revenueCatWebhook = onRequest(async (req, res) => {
+  if (req.method !== "POST") {
+    return res.status(405).send("Method not allowed");
+  }
+
+  try {
+    const expectedAuth = process.env.REVENUECAT_WEBHOOK_AUTH;
+    if (!expectedAuth) {
+      console.error("REVENUECAT_WEBHOOK_AUTH not set");
+      return res.status(500).send("Server configuration error");
+    }
+
+    const authHeader = req.headers.authorization || "";
+    if (authHeader !== expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+      console.warn("RevenueCat webhook rejected: bad authorization header");
+      return res.status(401).send("Unauthorized");
+    }
+
+    const event = req.body && req.body.event;
+    if (!event || !event.type) {
+      return res.status(400).send("Missing RevenueCat event");
+    }
+
+    const userId = event.app_user_id;
+    if (!userId || userId.startsWith("$RCAnonymousID")) {
+      console.warn(`RevenueCat event skipped for anonymous user: ${userId || "missing"}`);
+      return res.status(200).send("OK");
+    }
+
+    const entitlementIds = Array.isArray(event.entitlement_ids)
+      ? event.entitlement_ids
+      : [];
+    if (entitlementIds.length && !entitlementIds.includes("BetControl")) {
+      console.log(`RevenueCat event skipped for other entitlement: ${entitlementIds.join(",")}`);
+      return res.status(200).send("OK");
+    }
+
+    const expirationMs = Number(event.expiration_at_ms || 0);
+    const expirationDate = expirationMs > 0 ? new Date(expirationMs) : null;
+    const eventType = event.type;
+    const activeEventTypes = new Set([
+      "INITIAL_PURCHASE",
+      "RENEWAL",
+      "UNCANCELLATION",
+      "PRODUCT_CHANGE",
+      "SUBSCRIPTION_EXTENDED",
+      "TEMPORARY_ENTITLEMENT_GRANT",
+    ]);
+
+    const userUpdate = {
+      subscriptionProvider: "apple",
+      appleRevenueCatAppUserId: userId,
+      appleEntitlementIds: entitlementIds,
+      lastRevenueCatEventType: eventType,
+      lastRevenueCatEventAt: FieldValue.serverTimestamp(),
+    };
+
+    if (event.product_id) userUpdate.appleProductId = event.product_id;
+    if (event.store) userUpdate.appleStore = event.store;
+    if (event.environment) userUpdate.appleEnvironment = event.environment;
+    if (event.period_type) userUpdate.applePeriodType = event.period_type;
+    if (event.transaction_id) userUpdate.appleTransactionId = event.transaction_id;
+    if (event.original_transaction_id) {
+      userUpdate.appleOriginalTransactionId = event.original_transaction_id;
+    }
+    if (expirationDate) {
+      userUpdate.subscriptionExpiry = Timestamp.fromDate(expirationDate);
+    }
+
+    if (eventType === "EXPIRATION") {
+      userUpdate.subscriptionActive = false;
+    } else if (activeEventTypes.has(eventType)) {
+      userUpdate.subscriptionActive = expirationDate
+        ? expirationDate.getTime() > Date.now()
+        : true;
+    }
+
+    await db.collection("users").doc(userId).set(userUpdate, { merge: true });
+
+    if (activeEventTypes.has(eventType)) {
+      const transactionId =
+        event.transaction_id ||
+        event.original_transaction_id ||
+        `${eventType}_${Date.now()}`;
+      await db.collection("users").doc(userId)
+        .collection("payments")
+        .doc(`apple_${transactionId}`)
+        .set({
+          reference: transactionId,
+          provider: "apple",
+          source: "revenuecat_webhook",
+          productId: event.product_id || null,
+          entitlementIds,
+          amount: event.price || null,
+          currency: event.currency || null,
+          paidAt: event.purchased_at_ms
+            ? Timestamp.fromDate(new Date(Number(event.purchased_at_ms)))
+            : FieldValue.serverTimestamp(),
+          expiresAt: expirationDate ? Timestamp.fromDate(expirationDate) : null,
+          eventType,
+          environment: event.environment || null,
+        }, { merge: true });
+    }
+
+    console.log(`RevenueCat ${eventType} processed for ${userId}`);
+    return res.status(200).send("OK");
+  } catch (error) {
+    console.error("RevenueCat webhook error:", error);
+    return res.status(200).send("OK");
   }
 });
 

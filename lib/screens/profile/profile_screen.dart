@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:betcontrol_main/screens/auth/auth_screen.dart';
+import 'package:betcontrol_main/screens/profile/manage_subscription_screen.dart';
 import 'package:betcontrol_main/services/block_services.dart';
 import 'package:betcontrol_main/services/user_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -7,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../services/connectivity_service.dart';
@@ -25,6 +29,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   static const Color _dark = Color(0xFF1A1A2E);
   static const Color _accent = Color(0xFF00D4AA);
   static const Color _bg = Color(0xFFF8F9FF);
+  static const String _websiteUrl = 'https://usebetcontrol.com/';
+  static const String _privacyPolicyUrl =
+      'https://betcontrol-privacy.netlify.app';
 
   final _auth = FirebaseAuth.instance;
   final _firestore = FirebaseFirestore.instance;
@@ -117,9 +124,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             const SizedBox(height: 20),
             Text('Profile Photo',
                 style: GoogleFonts.poppins(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    color: _dark)),
+                    fontSize: 16, fontWeight: FontWeight.w700, color: _dark)),
             const SizedBox(height: 20),
             _sheetOption(
               icon: Icons.photo_library_rounded,
@@ -253,8 +258,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _formatBlockExpiry(DateTime? dt) {
     if (dt == null) return 'the timer expires';
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
     ];
     return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
   }
@@ -265,14 +280,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: Text('Cannot Sign Out',
               style: GoogleFonts.poppins(
                   fontWeight: FontWeight.w700, color: _dark)),
           content: Text(
-            'Protection is currently active. You cannot sign out until '
-            'the block timer expires on ${_formatBlockExpiry(blockService.unlockTime)}.',
+            'Protection is currently active until ${_formatBlockExpiry(blockService.unlockTime)}. '
+            'End protection first (Blocker → End protection early) with your PIN, then sign out.',
             style:
                 GoogleFonts.poppins(fontSize: 13, color: Colors.grey.shade600),
           ),
@@ -296,11 +311,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: Text('Sign out?',
-            style: GoogleFonts.poppins(
-                fontWeight: FontWeight.w700, color: _dark)),
+            style:
+                GoogleFonts.poppins(fontWeight: FontWeight.w700, color: _dark)),
         content: Text('You will need to sign in again to access your account.',
             style:
                 GoogleFonts.poppins(fontSize: 13, color: Colors.grey.shade600)),
@@ -334,6 +348,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('has_seen_onboarding', true);
       await UserService().clearProfileCache();
+      if (Platform.isIOS) {
+        try {
+          await Purchases.logOut().timeout(const Duration(seconds: 5));
+        } catch (_) {
+          // Non-critical; Firebase sign-out should not be blocked by RevenueCat.
+        }
+      }
       await GoogleSignIn().signOut();
       await _auth.signOut();
       if (mounted) {
@@ -362,8 +383,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return Container(
       width: size,
       height: size,
-      decoration: BoxDecoration(
-          color: Colors.grey.shade300, shape: BoxShape.circle),
+      decoration:
+          BoxDecoration(color: Colors.grey.shade300, shape: BoxShape.circle),
     );
   }
 
@@ -434,12 +455,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       Row(
                         children: [
                           Expanded(
-                              child:
-                                  _shimmerBox(width: double.infinity, height: 48, radius: 12)),
+                              child: _shimmerBox(
+                                  width: double.infinity,
+                                  height: 48,
+                                  radius: 12)),
                           const SizedBox(width: 12),
                           Expanded(
-                              child:
-                                  _shimmerBox(width: double.infinity, height: 48, radius: 12)),
+                              child: _shimmerBox(
+                                  width: double.infinity,
+                                  height: 48,
+                                  radius: 12)),
                         ],
                       ),
                     ],
@@ -492,13 +517,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-
               // ── Page header ───────────────────────────────────────────────
               Text('Profile',
                   style: GoogleFonts.poppins(
-                      fontSize: 26,
-                      fontWeight: FontWeight.w800,
-                      color: _dark)),
+                      fontSize: 26, fontWeight: FontWeight.w800, color: _dark)),
               const SizedBox(height: 2),
               Text('Manage your account',
                   style: GoogleFonts.poppins(
@@ -637,9 +659,38 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
               const SizedBox(height: 28),
 
+              // ── Subscription ────────────────────────────────────────────────
+              _sectionHeader(Icons.workspace_premium_outlined, 'Subscription'),
+              const SizedBox(height: 12),
+
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.04),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4)),
+                  ],
+                ),
+                child: _groupedInfoButton(
+                  icon: Icons.workspace_premium_outlined,
+                  label: 'Manage Subscription',
+                  subtitle: 'Renew, cancel, or restore your Apple plan',
+                  hasDivider: false,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const ManageSubscriptionScreen()),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 28),
+
               // ── Gambling Background ───────────────────────────────────────
-              _sectionHeader(
-                  Icons.psychology_outlined, 'Gambling Background'),
+              _sectionHeader(Icons.psychology_outlined, 'Gambling Background'),
               const SizedBox(height: 4),
               Text('Private — helps us personalise your support.',
                   style: GoogleFonts.poppins(
@@ -659,16 +710,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   'Other'
                 ],
                 selectedValue: _selectedGamblingType,
-                onEdit: () =>
-                    setState(() => _editingGamblingType = true),
+                onEdit: () => setState(() => _editingGamblingType = true),
                 onCancel: () {
                   setState(() {
                     _selectedGamblingType = _profileData['gamblingType'];
                     _editingGamblingType = false;
                   });
                 },
-                onOptionTap: (v) =>
-                    setState(() => _selectedGamblingType = v),
+                onOptionTap: (v) => setState(() => _selectedGamblingType = v),
                 onSave: () {
                   if (_selectedGamblingType == null) return;
                   _saveField('gamblingType', _selectedGamblingType);
@@ -690,8 +739,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   '5+ years'
                 ],
                 selectedValue: _selectedGamblingDuration,
-                onEdit: () =>
-                    setState(() => _editingGamblingDuration = true),
+                onEdit: () => setState(() => _editingGamblingDuration = true),
                 onCancel: () {
                   setState(() {
                     _selectedGamblingDuration =
@@ -703,8 +751,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     setState(() => _selectedGamblingDuration = v),
                 onSave: () {
                   if (_selectedGamblingDuration == null) return;
-                  _saveField(
-                      'gamblingDuration', _selectedGamblingDuration);
+                  _saveField('gamblingDuration', _selectedGamblingDuration);
                   setState(() => _editingGamblingDuration = false);
                 },
               ),
@@ -775,15 +822,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       },
                     ),
                     _groupedInfoButton(
+                      icon: Icons.language_rounded,
+                      label: 'Website',
+                      subtitle: 'usebetcontrol.com',
+                      hasDivider: true,
+                      onTap: () async {
+                        try {
+                          await launchUrl(Uri.parse(_websiteUrl),
+                              mode: LaunchMode.externalApplication);
+                        } catch (_) {
+                          _showSnack('Could not open website.');
+                        }
+                      },
+                    ),
+                    _groupedInfoButton(
                       icon: Icons.shield_outlined,
                       label: 'Privacy Policy',
                       subtitle: 'Read our privacy policy',
                       hasDivider: true,
                       onTap: () async {
-                        final uri = Uri.parse(
-                            'https://betcontrol-privacy.netlify.app');
                         try {
-                          await launchUrl(uri,
+                          await launchUrl(Uri.parse(_privacyPolicyUrl),
                               mode: LaunchMode.externalApplication);
                         } catch (_) {
                           _showSnack('Could not open Privacy Policy.');
@@ -812,8 +871,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 onTap: _confirmSignOut,
                 child: Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 20, vertical: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
@@ -937,8 +996,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     children: [
                       // Avatar
                       GestureDetector(
-                        onTap:
-                            _isUploadingImage ? null : _handleImageUpload,
+                        onTap: _isUploadingImage ? null : _handleImageUpload,
                         child: Stack(
                           children: [
                             Container(
@@ -958,8 +1016,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                           width: 24,
                                           height: 24,
                                           child: CircularProgressIndicator(
-                                              color: _accent,
-                                              strokeWidth: 2),
+                                              color: _accent, strokeWidth: 2),
                                         ),
                                       )
                                     : profileImageUrl != null
@@ -983,8 +1040,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 decoration: BoxDecoration(
                                   color: _dark,
                                   shape: BoxShape.circle,
-                                  border: Border.all(
-                                      color: _dark, width: 2),
+                                  border: Border.all(color: _dark, width: 2),
                                 ),
                                 child: const Icon(Icons.camera_alt_rounded,
                                     size: 12, color: Colors.white),
@@ -1012,13 +1068,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             const SizedBox(height: 4),
                             Text(email,
                                 style: GoogleFonts.poppins(
-                                    fontSize: 12,
-                                    color: Colors.white)),
+                                    fontSize: 12, color: Colors.white)),
                             const SizedBox(height: 2),
                             Text('Member since $memberSince',
                                 style: GoogleFonts.poppins(
-                                    fontSize: 11,
-                                    color: Colors.white)),
+                                    fontSize: 11, color: Colors.white)),
                           ],
                         ),
                       ),
@@ -1041,16 +1095,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       _heroStat(
                         label: 'Archetype',
                         value: _profileData['gamblingType'] != null
-                            ? _shortGamblingType(
-                                _profileData['gamblingType'])
+                            ? _shortGamblingType(_profileData['gamblingType'])
                             : 'Not set',
                       ),
                       _heroStatDivider(),
                       _heroStat(
                         label: 'Duration',
                         value: _profileData['gamblingDuration'] != null
-                            ? _shortDuration(
-                                _profileData['gamblingDuration'])
+                            ? _shortDuration(_profileData['gamblingDuration'])
                             : 'Not set',
                       ),
                       _heroStatDivider(),
@@ -1067,8 +1119,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
                   // Change photo link
                   GestureDetector(
-                    onTap:
-                        _isUploadingImage ? null : _handleImageUpload,
+                    onTap: _isUploadingImage ? null : _handleImageUpload,
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1118,8 +1169,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           Text(
             label,
             textAlign: TextAlign.center,
-            style: GoogleFonts.poppins(
-                fontSize: 10, color: Colors.white38),
+            style: GoogleFonts.poppins(fontSize: 10, color: Colors.white38),
           ),
         ],
       ),
@@ -1176,8 +1226,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       child: Column(
         children: [
           Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             child: Row(
               children: [
                 Container(
@@ -1202,8 +1251,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       const SizedBox(height: 1),
                       Text(subtitle,
                           style: GoogleFonts.poppins(
-                              fontSize: 12,
-                              color: Colors.grey.shade500)),
+                              fontSize: 12, color: Colors.grey.shade500)),
                     ],
                   ),
                 ),
@@ -1267,8 +1315,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     if (note != null)
                       Text(note,
                           style: GoogleFonts.poppins(
-                              fontSize: 11,
-                              color: Colors.grey.shade400)),
+                              fontSize: 11, color: Colors.grey.shade400)),
                   ],
                 ),
               ),
@@ -1294,9 +1341,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ? Text(
                 firstName[0].toUpperCase(),
                 style: GoogleFonts.poppins(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w800,
-                    color: _accent),
+                    fontSize: 28, fontWeight: FontWeight.w800, color: _accent),
               )
             : const Icon(Icons.person_rounded, color: _accent, size: 36),
       ),
@@ -1346,8 +1391,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 GestureDetector(
                   onTap: onEdit,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
                       color: _accent.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(20),
@@ -1365,9 +1410,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           if (!isEditing)
             Text(value.isNotEmpty ? value : '—',
                 style: GoogleFonts.poppins(
-                    fontSize: 14,
-                    color: _dark,
-                    fontWeight: FontWeight.w500))
+                    fontSize: 14, color: _dark, fontWeight: FontWeight.w500))
           else ...[
             TextField(
               controller: controller,
@@ -1477,8 +1520,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 GestureDetector(
                   onTap: onEdit,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
                         color: _accent.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(20)),
@@ -1495,9 +1538,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           if (!isEditing)
             Text(value.isNotEmpty ? value : '—',
                 style: GoogleFonts.poppins(
-                    fontSize: 14,
-                    color: _dark,
-                    fontWeight: FontWeight.w500))
+                    fontSize: 14, color: _dark, fontWeight: FontWeight.w500))
           else ...[
             const SizedBox(height: 8),
             Wrap(
@@ -1509,8 +1550,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   onTap: () => onOptionTap(opt),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 150),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                     decoration: BoxDecoration(
                       color: isSelected ? _dark : Colors.grey.shade100,
                       borderRadius: BorderRadius.circular(30),
@@ -1518,12 +1559,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     child: Text(opt,
                         style: GoogleFonts.poppins(
                             fontSize: 12,
-                            fontWeight: isSelected
-                                ? FontWeight.w600
-                                : FontWeight.w400,
-                            color: isSelected
-                                ? _accent
-                                : Colors.grey.shade700)),
+                            fontWeight:
+                                isSelected ? FontWeight.w600 : FontWeight.w400,
+                            color:
+                                isSelected ? _accent : Colors.grey.shade700)),
                   ),
                 );
               }).toList(),
@@ -1583,8 +1622,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   String _formatDate(DateTime dt) {
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
     ];
     return '${months[dt.month - 1]} ${dt.year}';
   }

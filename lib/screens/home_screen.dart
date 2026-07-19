@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:betcontrol_main/screens/block/block_screen.dart';
 import 'package:betcontrol_main/screens/assessment/assessment_screen.dart';
 import 'package:betcontrol_main/screens/coming_soon_screen.dart';
 import 'package:betcontrol_main/screens/profile/profile_screen.dart';
 import 'package:betcontrol_main/screens/progress_screen.dart';
 import 'package:betcontrol_main/services/block_services.dart';
+import 'package:betcontrol_main/services/subscription_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/cupertino.dart';
@@ -134,8 +137,7 @@ class _HomeScreenState extends State<HomeScreen> {
               label,
               style: GoogleFonts.poppins(
                 fontSize: 11,
-                fontWeight:
-                    isSelected ? FontWeight.w700 : FontWeight.w400,
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
                 color: isSelected
                     ? const Color(0xFF1A1A2E)
                     : const Color(0xFFB0B0B8),
@@ -161,6 +163,9 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
   String _firstName = '';
   String? _profileImageUrl;
   bool _isLoadingUser = true;
+  SubscriptionDetails _subscription =
+      const SubscriptionDetails(status: SubscriptionStatus.inactive);
+  StreamSubscription<SubscriptionDetails>? _subscriptionStream;
 
   late AnimationController _pageController;
   late Animation<double> _pageFade;
@@ -233,10 +238,9 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
         vsync: this, duration: const Duration(milliseconds: 700));
     _pageFade = Tween<double>(begin: 0.0, end: 1.0).animate(
         CurvedAnimation(parent: _pageController, curve: Curves.easeOut));
-    _pageSlide =
-        Tween<Offset>(begin: const Offset(0, 0.12), end: Offset.zero)
-            .animate(CurvedAnimation(
-                parent: _pageController, curve: Curves.easeOut));
+    _pageSlide = Tween<Offset>(begin: const Offset(0, 0.12), end: Offset.zero)
+        .animate(
+            CurvedAnimation(parent: _pageController, curve: Curves.easeOut));
     _pageController.forward();
 
     _shieldController = AnimationController(
@@ -248,71 +252,83 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
     );
 
     _loadData();
+    _subscriptionStream =
+        SubscriptionService().detailsStream().listen((details) {
+      if (mounted) setState(() => _subscription = details);
+    });
   }
 
   @override
   void dispose() {
+    _subscriptionStream?.cancel();
     _shieldController.dispose();
     _pageController.dispose();
     super.dispose();
   }
 
   Future<void> _loadData() async {
-  // ── Step 1: show cached data instantly ──────────────────────────
-  // Read from local storage first so the greeting and avatar appear
-  // immediately without waiting for any network call.
-  final prefs = await SharedPreferences.getInstance();
-  final cachedName = prefs.getString('cached_first_name') ?? '';
-  final cachedImage = prefs.getString('cached_profile_image_url');
-  if (mounted && cachedName.isNotEmpty) {
-    setState(() {
-      _firstName = cachedName;
-      _profileImageUrl = cachedImage;
-      _isLoadingUser = false;
-    });
-  }
-
-  // ── Step 2: refresh from Firestore in the background ────────────
-  // Silently updates the UI and cache if anything changed since
-  // last open — user never sees a loading state for this.
-  try {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    final doc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .get();
-    if (doc.exists && mounted) {
-      final data = doc.data()!;
-      final freshName =
-          (data['fullName'] ?? '').toString().split(' ').first;
-      final freshImage = data['profileImageUrl'] as String?;
-
-      // Save to cache for next open
-      await prefs.setString('cached_first_name', freshName);
-      if (freshImage != null) {
-        await prefs.setString('cached_profile_image_url', freshImage);
-      } else {
-        await prefs.remove('cached_profile_image_url');
-      }
-
-      if (mounted) {
-        setState(() {
-          _firstName = freshName;
-          _profileImageUrl = freshImage;
-          _isLoadingUser = false;
-        });
-      }
+    // ── Step 1: show cached data instantly ──────────────────────────
+    // Read from local storage first so the greeting and avatar appear
+    // immediately without waiting for any network call.
+    final prefs = await SharedPreferences.getInstance();
+    final cachedName = prefs.getString('cached_first_name') ?? '';
+    final cachedImage = prefs.getString('cached_profile_image_url');
+    if (mounted && cachedName.isNotEmpty) {
+      setState(() {
+        _firstName = cachedName;
+        _profileImageUrl = cachedImage;
+        _isLoadingUser = false;
+      });
     }
-  } catch (_) {
-    if (mounted) setState(() => _isLoadingUser = false);
+
+    // ── Step 2: refresh from Firestore in the background ────────────
+    // Silently updates the UI and cache if anything changed since
+    // last open — user never sees a loading state for this.
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) return;
+      final doc =
+          await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      if (doc.exists && mounted) {
+        final data = doc.data()!;
+        final freshName = (data['fullName'] ?? '').toString().split(' ').first;
+        final freshImage = data['profileImageUrl'] as String?;
+
+        // Save to cache for next open
+        await prefs.setString('cached_first_name', freshName);
+        if (freshImage != null) {
+          await prefs.setString('cached_profile_image_url', freshImage);
+        } else {
+          await prefs.remove('cached_profile_image_url');
+        }
+
+        if (mounted) {
+          setState(() {
+            _firstName = freshName;
+            _profileImageUrl = freshImage;
+            _isLoadingUser = false;
+          });
+        }
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isLoadingUser = false);
+    }
   }
-}
 
   String _formatExpiry(DateTime dt) {
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
     ];
     return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
   }
@@ -354,7 +370,6 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-
                 // ── Greeting row ──────────────────────────────────────
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -365,8 +380,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                         children: [
                           Text(_greeting,
                               style: GoogleFonts.poppins(
-                                  fontSize: 14,
-                                  color: Colors.grey.shade500)),
+                                  fontSize: 14, color: Colors.grey.shade500)),
                           if (!_isLoadingUser && _firstName.isNotEmpty)
                             Text(
                               '$_firstName! $_greetingEmoji',
@@ -385,18 +399,16 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                                 ? 'Protection is active — stay strong!'
                                 : 'Ready to take control today?',
                             style: GoogleFonts.poppins(
-                                fontSize: 13,
-                                color: Colors.grey.shade500),
+                                fontSize: 13, color: Colors.grey.shade500),
                           ),
                         ],
                       ),
                     ),
                     GestureDetector(
                       onTap: () {
-                        final homeState = context
-                            .findAncestorStateOfType<_HomeScreenState>();
-                        homeState?.setState(
-                            () => homeState._selectedIndex = 2);
+                        final homeState =
+                            context.findAncestorStateOfType<_HomeScreenState>();
+                        homeState?.setState(() => homeState._selectedIndex = 2);
                       },
                       child: Container(
                         width: 52,
@@ -405,8 +417,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                           color: _dark,
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
-                              color: _accent.withValues(alpha: 0.3),
-                              width: 2),
+                              color: _accent.withValues(alpha: 0.3), width: 2),
                         ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(14),
@@ -421,10 +432,8 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
 
                 // ── Block hero card ───────────────────────────────────
                 GestureDetector(
-                  onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) => const BlockScreen())),
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const BlockScreen())),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 300),
                     width: double.infinity,
@@ -451,7 +460,9 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                       borderRadius: BorderRadius.circular(28),
                       child: isBlocking
                           ? _buildActiveBlockCard(blockService)
-                          : _buildInactiveBlockCard(),
+                          : _buildInactiveBlockCard(
+                              hasAccess: _subscription.isAccessGranted,
+                            ),
                     ),
                   ),
                 ),
@@ -465,8 +476,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                 GestureDetector(
                   onTap: () => Navigator.push(
                     context,
-                    MaterialPageRoute(
-                        builder: (_) => const AssessmentScreen()),
+                    MaterialPageRoute(builder: (_) => const AssessmentScreen()),
                   ),
                   child: _featureCard(
                     icon: Icons.assignment_rounded,
@@ -606,8 +616,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                             Text(_todaysTip,
                                 style: GoogleFonts.poppins(
                                     fontSize: 13,
-                                    color: Colors.white
-                                        .withValues(alpha: 0.82),
+                                    color: Colors.white.withValues(alpha: 0.82),
                                     height: 1.5)),
                           ],
                         ),
@@ -666,8 +675,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                         color: _accent.withValues(alpha: 0.18),
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                            color: _accent.withValues(alpha: 0.35),
-                            width: 1),
+                            color: _accent.withValues(alpha: 0.35), width: 1),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -705,8 +713,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                             fontWeight: FontWeight.w600)),
                     if (service.unlockTime != null) ...[
                       const SizedBox(height: 4),
-                      Text(
-                          'Unlocks ${_formatExpiry(service.unlockTime!)}',
+                      Text('Unlocks ${_formatExpiry(service.unlockTime!)}',
                           style: GoogleFonts.poppins(
                               fontSize: 11, color: Colors.white38)),
                     ],
@@ -731,7 +738,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildInactiveBlockCard() {
+  Widget _buildInactiveBlockCard({required bool hasAccess}) {
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -782,7 +789,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                                     color: Colors.grey.shade400,
                                     shape: BoxShape.circle)),
                             const SizedBox(width: 6),
-                            Text('Inactive',
+                            Text(hasAccess ? 'Ready' : 'Inactive',
                                 style: GoogleFonts.poppins(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
@@ -791,14 +798,20 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                         ),
                       ),
                       const SizedBox(height: 14),
-                      Text('Site & App\nBlocker',
+                      Text(
+                          hasAccess
+                              ? 'Protection\nReady'
+                              : 'Site & App\nBlocker',
                           style: GoogleFonts.poppins(
                               fontSize: 24,
                               fontWeight: FontWeight.w800,
                               color: _dark,
                               height: 1.15)),
                       const SizedBox(height: 8),
-                      Text('Block gambling sites\nand apps now',
+                      Text(
+                          hasAccess
+                              ? 'Your subscription is active\nset your PIN to start'
+                              : 'Block gambling sites\nand apps now',
                           style: GoogleFonts.poppins(
                               fontSize: 13,
                               color: Colors.grey.shade500,
@@ -814,7 +827,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text('Get started',
+                            Text(hasAccess ? 'Activate now' : 'Get started',
                                 style: GoogleFonts.poppins(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,
@@ -961,13 +974,11 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
             width: 46,
             height: 46,
             decoration: BoxDecoration(
-              color:
-                  iconColor.withValues(alpha: isComingSoon ? 0.06 : 0.1),
+              color: iconColor.withValues(alpha: isComingSoon ? 0.06 : 0.1),
               borderRadius: BorderRadius.circular(14),
             ),
             child: Icon(icon,
-                color: iconColor
-                    .withValues(alpha: isComingSoon ? 0.5 : 1.0),
+                color: iconColor.withValues(alpha: isComingSoon ? 0.5 : 1.0),
                 size: 22),
           ),
           const SizedBox(width: 14),
@@ -981,9 +992,8 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
                         style: GoogleFonts.poppins(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
-                            color: isComingSoon
-                                ? Colors.grey.shade400
-                                : _dark)),
+                            color:
+                                isComingSoon ? Colors.grey.shade400 : _dark)),
                     if (isComingSoon) ...[
                       const SizedBox(width: 8),
                       Container(
@@ -1014,9 +1024,7 @@ class _HomeTabState extends State<_HomeTab> with TickerProviderStateMixin {
           Icon(
             Icons.arrow_forward_ios_rounded,
             size: 14,
-            color: isComingSoon
-                ? Colors.grey.shade200
-                : Colors.grey.shade400,
+            color: isComingSoon ? Colors.grey.shade200 : Colors.grey.shade400,
           ),
         ],
       ),
